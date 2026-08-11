@@ -119,7 +119,7 @@
     {
       "id": "animesalt",
       "name": "🧂 AnimeSalt",
-      "description": "AnimeSalt India",
+      "description": "Watch Anime in – Hindi, Tamil & Telugu.",
       "version": "1.0.0",
       "author": "piratezoro9",
       "supportedTypes": ["movie", "tv"],
@@ -259,7 +259,7 @@
     {
       "id": "moonflix",
       "name": "MoonFlix",
-      "description": "",
+      "description": "Bollywood, Hollywood, South Indian Movies & Series",
       "version": "1.0.0",
       "author": "Nuvio Team",
       "supportedTypes": ["movie", "tv"],
