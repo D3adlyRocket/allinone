@@ -1,6 +1,7 @@
-# Nuvio Plugins - Compiled by =[D3adly]=
+# Nuvio Plugins - Compiled by =[D3adly]= All right to D3adly 
 
-A collection of high-quality local scrapers for the Nuvio streaming application. These scrapers allow you to fetch premium streams from various sources directly within the app.
+this is forked just to works without P2P extension (Torrentio)
+
 
 # My Other Repo's
 - **All Anime** - https://github.com/D3adlyRocket/Anime-Nuvio
@@ -14,7 +15,7 @@ A collection of high-quality local scrapers for the Nuvio streaming application.
 2. Go to **Settings → Local Scrapers**
 3. Add this repository URL:
    ```
-   https://raw.githubusercontent.com/NuvioPlugin/All-in-One-Nuvio/refs/heads/main/manifest.json
+   https://raw.githubusercontent.com/Liikevin77/NuviOnlyH/main/manifest.json
    ```
 4. Enable the scrapers you want to use
 
