@@ -3,7 +3,6 @@
 this is forked just to works without P2P extension (Torrentio)
 
 
-
 ## Installation
 
 1. Open **Nuvio** app
