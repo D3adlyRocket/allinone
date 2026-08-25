@@ -17,6 +17,20 @@
       "contentLanguage": ["en"]
     },
     {
+      "id": "1shows",
+      "name": "1Shows",
+      "description": "1Shows- Movies | Series in 4k, 1080p, 720p & 480p",
+      "version": "1.0.0",
+      "author": "A2R14N - Nuvio Team",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/1shows.js",
+      "enabled": true,
+      "hasSettings": false,
+      "formats": ["mkv", "mp4", "m3u8"],
+      "logo": "https://i.postimg.cc/9fDVBvn5/1shows.png",
+      "contentLanguage": ["en", "hi"]
+    },
+    {
       "id": "allmovieland",
       "name": "AllMovieLand",
       "description": "AllMovieLand streaming provider with multi-language support",
