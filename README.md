@@ -1,4 +1,20 @@
-All-in-One Nuvio 🎬
+# Nuvio Plugins 🎬
+
+- Compiled by =[D3adly]= All right to D3adly
+- 
+This is forked just to works without P2P extension (Torrentio) and without Anime content 🚫
+
+
+## Installation
+
+1. Open **Nuvio** app
+2. Go to **Settings → Local Scrapers**
+3. Add this repository URL:
+
+```
+https://raw.githubusercontent.com/Liikevin77/NuviOnlyH/NuviOnlyMS/manifest.json
+```
+
 
 All-in-One Nuvio is a collection of scrapers and providers for movies and TV series.
 
