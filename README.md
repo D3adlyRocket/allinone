@@ -12,9 +12,10 @@ This is forked just to works without P2P extension (Torrentio) and without Anime
 3. Add this repository URL:
 
 ```
-https://raw.githubusercontent.com/Liikevin77/NuviOnlyH/NuviOnlyMS/manifest.json
-```
 
+https://raw.githubusercontent.com/Liikevin77/NuviOnlyH/NuviOnlyMS/manifest.json
+
+```
 
 All-in-One Nuvio is a collection of scrapers and providers for movies and TV series.
 
