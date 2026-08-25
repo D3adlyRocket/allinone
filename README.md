@@ -3,11 +3,6 @@
 this is forked just to works without P2P extension (Torrentio)
 
 
-# My Other Repo's
-- **All Anime** - https://github.com/D3adlyRocket/Anime-Nuvio
-- **All Hindi** - https://github.com/D3adlyRocket/Hindi-Nuvio
-- **Android TV** - https://github.com/D3adlyRocket/Nuvio-TV
-- **Showbox Private** - https://github.com/D3adlyRocket/ShowboxTV
 
 ## Installation
 
