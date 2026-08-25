@@ -12,6 +12,27 @@ There are no anime scrapers in this repository.
 
 This project does not include anime providers or anime-specific sources. Its purpose is to provide scrapers for movies and TV series.
 
+if you want to use full Version  with anime go to 
+
+```
+https://github.com/Liikevin77/NuviOnlyH
+
+```
+
+Or Use direct Full HTTP Manifest that comes with Anime Empty of P2P (Torrentio) 
+
+## Installation
+
+1. Open **Nuvio** app
+2. Go to **Settings → Local Scrapers**
+3. Add this repository URL:
+
+```
+https://raw.githubusercontent.com/Liikevin77/NuviOnlyH/main/manifest.json
+
+```
+
+
 🔎 Features
 
 Depending on the provider, scrapers can handle:
