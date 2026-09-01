@@ -1,6 +1,6 @@
 /**
  * animepahe - Built from src/animepahe/
- * Generated: 2026-07-07T12:10:52.013Z
+ * Generated: 2026-09-01T13:06:43.712Z
  */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -25,18 +25,6 @@ var __spreadValues = (a, b) => {
   return a;
 };
 var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
-var __objRest = (source, exclude) => {
-  var target = {};
-  for (var prop in source)
-    if (__hasOwnProp.call(source, prop) && exclude.indexOf(prop) < 0)
-      target[prop] = source[prop];
-  if (source != null && __getOwnPropSymbols)
-    for (var prop of __getOwnPropSymbols(source)) {
-      if (exclude.indexOf(prop) < 0 && __propIsEnum.call(source, prop))
-        target[prop] = source[prop];
-    }
-  return target;
-};
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
     for (let key of __getOwnPropNames(from))
@@ -78,34 +66,67 @@ var __async = (__this, __arguments, generator) => {
 var import_cheerio_without_node_native = __toESM(require("cheerio-without-node-native"));
 
 // src/animepahe/constants.js
-var MAIN_URL = "https://animepahe.com";
-var PROXY_URL = "https://animepaheproxy.phisheranimepahe.workers.dev/?url=";
+var ANIMEPAHE_DOMAINS = [
+  "https://animepahe.pw",
+  "https://animepahe.org",
+  "https://animepahe.com",
+  "https://animepahe.ru"
+];
+var MAIN_URL = "https://animepahe.pw";
+var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 var HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
-  "Cookie": "__ddg2_=1234567890",
-  "Referer": "https://animepahe.com/"
+  "User-Agent": USER_AGENT,
+  "Accept": "application/json, text/plain, */*",
+  "Referer": `${MAIN_URL}/`
 };
 
 // src/animepahe/utils.js
+var activeDomain = MAIN_URL;
 function fetchText(_0) {
   return __async(this, arguments, function* (url, options = {}) {
-    const _a = options, { useProxy = false } = _a, fetchOptions = __objRest(_a, ["useProxy"]);
-    const settings = globalThis.SCRAPER_SETTINGS || {};
-    const domain = settings.domain || MAIN_URL;
-    const finalUrl = url.startsWith("http") ? url : `${domain}${url}`;
-    const targetUrl = useProxy ? `${PROXY_URL}${encodeURIComponent(finalUrl)}` : finalUrl;
-    const isAnimePaheUrl = finalUrl.includes("animepahe.");
-    const response = yield fetch(targetUrl, __spreadValues({
-      headers: __spreadValues(__spreadProps(__spreadValues({}, HEADERS), {
-        "Referer": `${domain}/`
-      }), fetchOptions.headers),
-      cfKiller: isAnimePaheUrl,
-      // Only activate native bypass for AnimePahe domains
-      skipSizeCheck: true
-    }, fetchOptions));
-    if (!response.ok)
-      throw new Error(`HTTP ${response.status} on ${finalUrl}`);
-    return yield response.text();
+    const isAbsolute = url.startsWith("http");
+    const urlsToTry = isAbsolute ? [url] : ANIMEPAHE_DOMAINS.map((d) => `${d}${url.startsWith("/") ? "" : "/"}${url}`);
+    let lastError = null;
+    for (const tryUrl of urlsToTry) {
+      try {
+        const isPaheUrl = tryUrl.includes("animepahe.");
+        const mergedHeaders = __spreadValues(__spreadProps(__spreadValues({}, HEADERS), {
+          "Referer": `${activeDomain}/`
+        }), options.headers || {});
+        let response = yield fetch(tryUrl, __spreadValues({
+          headers: mergedHeaders,
+          cfKiller: isPaheUrl,
+          skipSizeCheck: true
+        }, options));
+        if ((response.status === 403 || response.status === 503) && typeof Cloudflare !== "undefined" && Cloudflare.solve) {
+          try {
+            const solvedHeaders = yield Cloudflare.solve(tryUrl);
+            if (solvedHeaders["Cookie"])
+              mergedHeaders["Cookie"] = solvedHeaders["Cookie"];
+            if (solvedHeaders["User-Agent"])
+              mergedHeaders["User-Agent"] = solvedHeaders["User-Agent"];
+            response = yield fetch(tryUrl, __spreadValues({
+              headers: mergedHeaders,
+              skipSizeCheck: true
+            }, options));
+          } catch (_) {
+          }
+        }
+        if (response.ok) {
+          if (!isAbsolute) {
+            const match = tryUrl.match(/^(https?:\/\/[^\/]+)/);
+            if (match)
+              activeDomain = match[1];
+          }
+          return yield response.text();
+        }
+        lastError = new Error(`HTTP ${response.status} on ${tryUrl}`);
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError || new Error(`Failed to fetch: ${url}`);
   });
 }
 function fetchJson(_0) {
@@ -117,11 +138,11 @@ function fetchJson(_0) {
 function getImdbId(tmdbId, mediaType) {
   return __async(this, null, function* () {
     try {
-      const url = `https://api.themoviedb.org/3/${mediaType === "tv" ? "tv" : "movie"}/${tmdbId}/external_ids?api_key=1865f43a0549ca50d341dd9ab8b29f49`;
+      const url = `https://api.themoviedb.org/3/${mediaType === "tv" ? "tv" : "movie"}/${tmdbId}/external_ids?api_key=${TMDB_API_KEY}`;
       const res = yield fetch(url);
       const data = yield res.json();
       return data.imdb_id;
-    } catch (e) {
+    } catch (_) {
       return null;
     }
   });
@@ -134,27 +155,29 @@ function resolveMapping(imdbId, season, episode) {
       if (!res.ok)
         return null;
       return yield res.json();
-    } catch (e) {
+    } catch (_) {
       return null;
     }
   });
 }
 function getMalTitle(malId) {
   return __async(this, null, function* () {
+    var _a, _b;
     try {
       const res = yield fetch(`https://api.jikan.moe/v4/anime/${malId}`);
       if (!res.ok)
         return null;
       const data = yield res.json();
-      return data.data.title;
-    } catch (e) {
+      return ((_a = data.data) == null ? void 0 : _a.title) || ((_b = data.data) == null ? void 0 : _b.title_english);
+    } catch (_) {
       return null;
     }
   });
 }
-function searchAnime(query) {
+function searchAnime(query, page = 1) {
   return __async(this, null, function* () {
-    const url = `/api?m=search&l=8&q=${encodeURIComponent(query)}`;
+    const timeSuffix = Math.floor(Date.now() / 1e3) + page * 3;
+    const url = `/api?m=search&l=8&q=${encodeURIComponent(query + " " + timeSuffix)}&page=${page}`;
     return yield fetchJson(url);
   });
 }
@@ -170,30 +193,29 @@ function unpack(code) {
     if (match) {
       let [_, quote1, p, a, c, quote2, kStr] = match;
       p = p.replace(/\\'/g, "'").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-      a = parseInt(a);
-      c = parseInt(c);
+      a = parseInt(a, 10);
+      c = parseInt(c, 10);
       const k = kStr.split("|");
-      const e = (c2) => (c2 < a ? "" : e(parseInt(c2 / a))) + ((c2 = c2 % a) > 35 ? String.fromCharCode(c2 + 29) : c2.toString(36));
+      const e = (c2) => (c2 < a ? "" : e(parseInt(c2 / a, 10))) + ((c2 = c2 % a) > 35 ? String.fromCharCode(c2 + 29) : c2.toString(36));
       const d = {};
       while (c--)
         d[e(c)] = k[c] || e(c);
-      return p.replace(/\b\w+\b/g, (w) => d[w]);
+      return p.replace(/\b\w+\b/g, (w) => d[w] !== void 0 ? d[w] : w);
     }
-  } catch (e) {
-    console.error("[AnimePahe] Unpack error:", e.message);
+  } catch (_) {
   }
   return code;
 }
 function extractKwik(url) {
   return __async(this, null, function* () {
     try {
-      const settings = globalThis.SCRAPER_SETTINGS || {};
-      const baseUrl = settings.domain || "https://animepahe.com";
       const res = yield fetch(url, {
         headers: __spreadProps(__spreadValues({}, HEADERS), {
-          "Referer": `${baseUrl}/`,
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        })
+          "Referer": `${MAIN_URL}/`,
+          "User-Agent": USER_AGENT
+        }),
+        cfKiller: true,
+        skipSizeCheck: true
       });
       const finalUrl = res.url || url;
       const html = yield res.text();
@@ -219,12 +241,12 @@ function extractKwik(url) {
       }
       for (const scriptContent of matches) {
         const unpacked = unpack(scriptContent);
-        const m3u8Match = unpacked.match(/source\s*=\s*'([^']+m3u8[^']*)'/) || unpacked.match(/source\s*=\s*"([^"]+m3u8[^"]*)"/);
+        const m3u8Match = unpacked.match(/source\s*=\s*['"]([^'"]+m3u8[^'"]*)['"]/) || unpacked.match(/const\s+source\s*=\s*\\['"]([^\\'"]+m3u8[^\\'"]*)\\['"]/);
         if (m3u8Match) {
           const m3u8Url = m3u8Match[1];
           const titleMatch = html.match(/<title>([\s\S]*?)<\/title>/);
           const title = titleMatch ? titleMatch[1].trim() : "video";
-          const fileName = title.endsWith(".mp4") ? title : title + ".mp4";
+          const fileName = title.endsWith(".mp4") ? title : `${title}.mp4`;
           const urlParts = m3u8Url.replace("/stream/", "/mp4/").split("/");
           urlParts.pop();
           const mp4Base = urlParts.join("/");
@@ -235,13 +257,12 @@ function extractKwik(url) {
             headers: {
               "Referer": finalUrl,
               "Origin": "https://kwik.cx",
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+              "User-Agent": USER_AGENT
             }
           };
         }
       }
-    } catch (e) {
-      console.error("[AnimePahe] Kwik extraction failed:", e.message);
+    } catch (_) {
     }
     return null;
   });
@@ -275,9 +296,11 @@ function extractPahe(url) {
         method: "GET",
         redirect: "manual",
         headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "User-Agent": USER_AGENT,
           "Referer": "https://pahe.win/"
-        }
+        },
+        cfKiller: true,
+        skipSizeCheck: true
       });
       const redirectLoc = initRes.headers.get("location") || initRes.headers.get("Location");
       if (!redirectLoc)
@@ -286,9 +309,11 @@ function extractPahe(url) {
       const kwikRes = yield fetch(kwikUrl, {
         method: "GET",
         headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "User-Agent": USER_AGENT,
           "Referer": "https://kwik.cx/"
-        }
+        },
+        cfKiller: true,
+        skipSizeCheck: true
       });
       const html = yield kwikRes.text();
       const setCookieHeader = kwikRes.headers.get("set-cookie") || kwikRes.headers.get("Set-Cookie");
@@ -301,7 +326,7 @@ function extractPahe(url) {
       if (!match)
         return null;
       const [_, fullString, key, v1, v2] = match;
-      const decrypted = paheDecrypt(fullString, key, parseInt(v1), parseInt(v2));
+      const decrypted = paheDecrypt(fullString, key, parseInt(v1, 10), parseInt(v2, 10));
       const actionMatch = decrypted.match(/action="([^"]+)"/);
       const tokenMatch = decrypted.match(/value="([^"]+)"/);
       if (!actionMatch || !tokenMatch)
@@ -311,19 +336,20 @@ function extractPahe(url) {
       const formData = new URLSearchParams();
       formData.append("_token", token);
       let tries = 0;
-      let postRes = null;
       let location = null;
-      while (tries < 20) {
-        postRes = yield fetch(postUri, {
+      while (tries < 10) {
+        const postRes = yield fetch(postUri, {
           method: "POST",
           redirect: "manual",
           headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": USER_AGENT,
             "Referer": kwikUrl,
             "Cookie": cookie,
             "Content-Type": "application/x-www-form-urlencoded"
           },
-          body: formData.toString()
+          body: formData.toString(),
+          cfKiller: true,
+          skipSizeCheck: true
         });
         if (postRes.status === 302 || postRes.status === 301) {
           location = postRes.headers.get("location") || postRes.headers.get("Location");
@@ -336,12 +362,11 @@ function extractPahe(url) {
           url: location,
           headers: {
             "Referer": "https://kwik.cx/",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": USER_AGENT
           }
         };
       }
-    } catch (e) {
-      console.error("[AnimePahe] Pahe extractor failed:", e.message);
+    } catch (_) {
     }
     return null;
   });
@@ -369,17 +394,23 @@ function getStreams(tmdbId, mediaType, season, episode) {
           return [];
         const searchResults = yield searchAnime(animeTitle);
         if (searchResults.data && searchResults.data.length > 0) {
-          for (let i = 0; i < Math.min(searchResults.data.length, 3); i++) {
+          for (let i = 0; i < Math.min(searchResults.data.length, 5); i++) {
             const item = searchResults.data[i];
-            const pageHtml = yield fetchText(`/anime/${item.session}`);
-            if (pageHtml.includes(`myanimelist.net/anime/${targetMalId}`)) {
-              animeSession = item.session;
-              break;
+            try {
+              const pageHtml = yield fetchText(`/anime/${item.session}`);
+              if (pageHtml.includes(`myanimelist.net/anime/${targetMalId}`) || item.id && String(item.id) === String(targetMalId)) {
+                animeSession = item.session;
+                break;
+              }
+            } catch (_) {
             }
+          }
+          if (!animeSession && searchResults.data.length > 0) {
+            animeSession = searchResults.data[0].session;
           }
         }
       } else {
-        const tmdbUrl = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=1865f43a0549ca50d341dd9ab8b29f49`;
+        const tmdbUrl = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=439c478a771f35c05022f9feabcca01c`;
         const tmdbRes = yield fetch(tmdbUrl);
         const tmdbData = yield tmdbRes.json();
         animeTitle = tmdbData.title || tmdbData.original_title;
@@ -388,10 +419,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
           return [];
         const searchResults = yield searchAnime(animeTitle);
         if (searchResults.data && searchResults.data.length > 0) {
-          const firstResult = searchResults.data[0];
-          if (firstResult.title.toLowerCase() === animeTitle.toLowerCase()) {
-            animeSession = firstResult.session;
-          }
+          const match = searchResults.data.find((r) => r.title.toLowerCase() === animeTitle.toLowerCase()) || searchResults.data[0];
+          animeSession = match.session;
         }
       }
       if (!animeSession)
@@ -402,18 +431,18 @@ function getStreams(tmdbId, mediaType, season, episode) {
         return [];
       const paheEpStart = Math.floor(firstPageData.data[0].episode);
       const perPage = firstPageData.per_page || 30;
-      const targetPaheEp = paheEpStart - 1 + mappedEp;
-      const targetPage = Math.ceil(mappedEp / perPage) || 1;
+      const targetPaheEp = paheEpStart - 1 + Number(mappedEp);
+      const targetPage = Math.ceil(Number(mappedEp) / perPage) || 1;
       const targetPageUrl = `/api?m=release&id=${animeSession}&sort=episode_asc&page=${targetPage}`;
       const targetPageData = yield fetchJson(targetPageUrl);
       let episodeSession = null;
       if (targetPageData && targetPageData.data) {
-        const foundEp = targetPageData.data.find((e) => Math.floor(e.episode) == targetPaheEp);
+        const foundEp = targetPageData.data.find((e) => Math.floor(e.episode) === targetPaheEp);
         if (foundEp)
           episodeSession = foundEp.session;
       }
       if (!episodeSession && targetPage !== 1) {
-        const fallbackEp = firstPageData.data.find((e) => Math.floor(e.episode) == targetPaheEp);
+        const fallbackEp = firstPageData.data.find((e) => Math.floor(e.episode) === targetPaheEp);
         if (fallbackEp)
           episodeSession = fallbackEp.session;
       }
@@ -424,34 +453,41 @@ function getStreams(tmdbId, mediaType, season, episode) {
       const $ = import_cheerio_without_node_native.default.load(playHtml);
       const streams = [];
       const promises = [];
+      const seen = /* @__PURE__ */ new Set();
       $("#resolutionMenu button").each((i, el) => {
         const $btn = $(el);
         const kwikUrl = $btn.attr("data-src");
         const btnText = $btn.text();
         const quality = extractQuality(btnText);
-        const type = btnText.toLowerCase().includes("eng") ? "Dub" : "Sub";
+        const type = btnText.toLowerCase().includes("eng") ? "DUB" : "SUB";
         if (kwikUrl && kwikUrl.includes("kwik")) {
           promises.push(
             extractKwik(kwikUrl).then((res) => {
               if (res) {
-                if (res.m3u8) {
+                if (res.m3u8 && !seen.has(res.m3u8)) {
+                  seen.add(res.m3u8);
                   streams.push({
-                    name: `AnimePahe [HLS] (${quality} ${type})`,
-                    title: `${animeTitle} - Episode ${mappedEp}`,
+                    name: `AnimePahe [${type}] (${quality} HLS)`,
+                    title: mediaType === "movie" ? `${animeTitle} (${type})` : `${animeTitle} - Episode ${mappedEp} (${type})`,
                     url: res.m3u8,
                     quality,
-                    headers: res.headers
+                    headers: res.headers,
+                    provider: "animepahe",
+                    type: "m3u8"
                   });
                 }
-                if (res.mp4) {
+                if (res.mp4 && !seen.has(res.mp4)) {
+                  seen.add(res.mp4);
                   streams.push({
-                    name: `AnimePahe [MP4] (${quality} ${type})`,
-                    title: `${animeTitle} - Episode ${mappedEp}`,
+                    name: `AnimePahe [${type}] (${quality} MP4)`,
+                    title: mediaType === "movie" ? `${animeTitle} (${type})` : `${animeTitle} - Episode ${mappedEp} (${type})`,
                     url: res.mp4,
                     quality,
                     headers: __spreadProps(__spreadValues({}, res.headers), {
                       "Referer": kwikUrl
-                    })
+                    }),
+                    provider: "animepahe",
+                    type: "mp4"
                   });
                 }
               }
@@ -465,17 +501,20 @@ function getStreams(tmdbId, mediaType, season, episode) {
         const paheUrl = $link.attr("href");
         const linkText = $link.text();
         const quality = extractQuality(linkText);
-        const type = $link.find("span").text().toLowerCase().includes("eng") ? "Dub" : "Sub";
+        const type = $link.find("span").text().toLowerCase().includes("eng") ? "DUB" : "SUB";
         if (paheUrl && (paheUrl.includes("pahe.win") || paheUrl.includes("pahe.me") || paheUrl.includes("pahe.li") || paheUrl.includes("kwik"))) {
           promises.push(
             extractPahe(paheUrl).then((res) => {
-              if (res && res.url) {
+              if (res && res.url && !seen.has(res.url)) {
+                seen.add(res.url);
                 streams.push({
-                  name: `AnimePahe [Direct] (${quality} ${type})`,
-                  title: `${animeTitle} - Episode ${mappedEp}`,
+                  name: `AnimePahe [${type}] (${quality} Direct)`,
+                  title: mediaType === "movie" ? `${animeTitle} (${type})` : `${animeTitle} - Episode ${mappedEp} (${type})`,
                   url: res.url,
                   quality,
-                  headers: res.headers
+                  headers: res.headers,
+                  provider: "animepahe",
+                  type: "mp4"
                 });
               }
             }).catch(() => {
@@ -486,33 +525,9 @@ function getStreams(tmdbId, mediaType, season, episode) {
       yield Promise.all(promises);
       const qualityOrder = { "1080p": 3, "720p": 2, "360p": 1 };
       return streams.sort((a, b) => (qualityOrder[b.quality] || 0) - (qualityOrder[a.quality] || 0));
-    } catch (error) {
+    } catch (_) {
       return [];
     }
   });
 }
-function onSettings() {
-  return __async(this, null, function* () {
-    return [
-      { type: "header", label: "Domain Selection" },
-      {
-        type: "select",
-        key: "domain",
-        label: "Preferred Domain",
-        description: "AnimePahe frequently rotates domains. Choose the one currently working for you.",
-        options: [
-          { label: "animepahe.com", value: "https://animepahe.com" },
-          { label: "animepahe.org", value: "https://animepahe.org" },
-          { label: "animepahe.pw", value: "https://animepahe.pw" }
-        ],
-        defaultValue: "https://animepahe.com"
-      }
-    ];
-  });
-}
-if (typeof module !== "undefined" && module.exports) {
-  module.exports = { getStreams, onSettings };
-} else {
-  global.getStreams = getStreams;
-  global.onSettings = onSettings;
-}
+module.exports = { getStreams };
