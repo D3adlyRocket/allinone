@@ -1,36 +1,51 @@
 import cheerio from 'cheerio-without-node-native';
-import { HEADERS, REANIME_BASE, TMDB_API_KEY, ANILIST_URL, ARM_BASE, CINEMETA_URL } from './constants.js';
+import { HEADERS, REANIME_BASE, REANIME_DOMAINS, TMDB_API_KEY, ANILIST_URL, ARM_BASE, CINEMETA_URL } from './constants.js';
 
-function absolutize(path) {
+let activeBaseUrl = REANIME_BASE;
+
+function absolutize(path, base = activeBaseUrl) {
     if (!path) return "";
     if (path.startsWith("http")) return path;
     const cleanPath = path.startsWith("/") ? path : `/${path}`;
-    return `${REANIME_BASE}${cleanPath}`;
+    return `${base}${cleanPath}`;
 }
 
 export async function fetchText(url, options = {}) {
-    const finalUrl = absolutize(url);
-    console.log(`[Reanime] Fetching: ${finalUrl}`);
-    const response = await fetch(finalUrl, {
-        ...options,
-        headers: {
-            ...HEADERS,
-            ...(options.headers || {})
-        },
-        cfKiller: true,
-        skipSizeCheck: true
-    });
-    if (!response.ok) {
-        throw new Error(`Reanime HTTP ${response.status}: ${finalUrl}`);
+    const isAbsolute = url.startsWith("http");
+    const urlsToTry = isAbsolute ? [url] : REANIME_DOMAINS.map(domain => absolutize(url, domain));
+
+    let lastError = null;
+    for (const tryUrl of urlsToTry) {
+        try {
+            const response = await fetch(tryUrl, {
+                ...options,
+                headers: {
+                    ...HEADERS,
+                    ...(options.headers || {})
+                },
+                cfKiller: true,
+                skipSizeCheck: true
+            });
+            if (response.ok) {
+                if (!isAbsolute) {
+                    const match = tryUrl.match(/^(https?:\/\/[^\/]+)/);
+                    if (match) activeBaseUrl = match[1];
+                }
+                return await response.text();
+            }
+            lastError = new Error(`Reanime HTTP ${response.status}: ${tryUrl}`);
+        } catch (e) {
+            lastError = e;
+        }
     }
-    return await response.text();
+    throw lastError || new Error(`Failed to fetch: ${url}`);
 }
 
 async function fetchJson(url, options = {}) {
     const text = await fetchText(url, {
         ...options,
         headers: {
-            "Accept": "application/json",
+            "Accept": "application/json, text/plain, */*",
             ...(options.headers || {})
         }
     });
@@ -71,8 +86,6 @@ export async function getAnilistInfo(alId) {
     }
 }
 
-// --- AnimeKai Search Logic Port ---
-
 export async function getSyncInfo(id, mediaType, season, episode) {
     const isImdb = typeof id === 'string' && id.indexOf('tt') === 0;
 
@@ -82,7 +95,7 @@ export async function getSyncInfo(id, mediaType, season, episode) {
         try {
             const data = await fetchJson(url);
             const meta = data.meta;
-            if (!meta) throw new Error('No Cinemata metadata');
+            if (!meta) throw new Error('No Cinemeta metadata');
             if (mediaType === 'movie') return { date: meta.released ? meta.released.split('T')[0] : null, title: meta.name, dayIndex: 1 };
             
             const videos = meta.videos || [];
@@ -101,7 +114,7 @@ export async function getSyncInfo(id, mediaType, season, episode) {
     if (isImdb) {
         const info = await getCinemetaInfo(id);
         if (info.date) return { imdbId: id, releaseDate: info.date, episodeTitle: info.title, dayIndex: info.dayIndex, episode };
-        throw new Error('Could not find release date on Cinemata');
+        throw new Error('Could not find release date on Cinemeta');
     }
 
     const tmdbUrl = `https://api.themoviedb.org/3/${mediaType === 'movie' ? 'movie' : 'tv'}/${id}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
@@ -121,7 +134,7 @@ export async function getSyncInfo(id, mediaType, season, episode) {
     
     const cMeta = await getCinemetaInfo(imdbId);
     let finalDate = cMeta.date;
-    if (mediaType === 'movie' && base.release_date) finalDate = base.release_date;
+    if (mediaType === 'movie' && details.release_date) finalDate = details.release_date;
 
     if (!finalDate) throw new Error(`Could not find release date for ID ${imdbId}`);
 
@@ -202,8 +215,6 @@ export async function resolveByDate(releaseDateStr, showTitle, originalEpisode, 
     return null;
 }
 
-// --- Reanime Specific Logic ---
-
 function normalizeTitle(value) {
     return String(value || "")
         .toLowerCase()
@@ -246,30 +257,10 @@ function extractAnilistId(item) {
     return null;
 }
 
-function collectSlugsFromHtml(html) {
-    const $ = cheerio.load(html);
-    const results = [];
-    $("a[href]").each((_, el) => {
-        const href = $(el).attr("href") || "";
-        const match = href.match(/\/(?:anime|watch)\/([^?#]+)/);
-        if (match) {
-            results.push({
-                slug: match[1],
-                title: $(el).text().trim()
-            });
-        }
-    });
-    return results;
-}
-
 export async function searchReanimeAnime(query, year, targetAnilistId = null) {
     const endpoints = [
         `/api/v1/search?q=${encodeURIComponent(query)}&limit=36`,
-        `/api/search?q=${encodeURIComponent(query)}`,
-        `/api/anime/search?q=${encodeURIComponent(query)}`,
-        `/api/search/anime?q=${encodeURIComponent(query)}`,
-        `/search?keyword=${encodeURIComponent(query)}`,
-        `/search?q=${encodeURIComponent(query)}`
+        `/api/search?q=${encodeURIComponent(query)}`
     ];
 
     const candidates = [];
@@ -298,12 +289,6 @@ export async function searchReanimeAnime(query, year, targetAnilistId = null) {
                         }
                     });
                 }
-            } else {
-                const htmlResults = collectSlugsFromHtml(text);
-                htmlResults.forEach(c => {
-                    c.score = scoreCandidate(c.title, query, year, targetAnilistId, null);
-                    candidates.push(c);
-                });
             }
         } catch (_) {}
         if (candidates.some(c => c.score >= 1000)) break;
@@ -319,85 +304,50 @@ export async function searchReanimeAnime(query, year, targetAnilistId = null) {
     }
 
     unique.sort((a, b) => b.score - a.score);
-    
-    if (unique.length > 0) {
-        console.log(`[Reanime] Search for "${query}" found ${unique.length} candidates. Top: "${unique[0].title}" (Score: ${unique[0].score}, AL: ${unique[0].anilistId})`);
-    }
-    
     return unique.length > 0 ? unique[0] : null;
 }
 
-export async function searchReanimeSlug(query, year) {
-    const anime = await searchReanimeAnime(query, year);
-    return anime ? anime.slug : null;
-}
-
-function extractDirectFlixUrls(html) {
-    const urls = [];
-    const patterns = [
-        /https?:\/\/flixcloud\.cc\/e\/[A-Za-z0-9_-]+[^"'\\\s<]*/g,
-        /["'](\/e\/[A-Za-z0-9_-]+[^"']*)["']/g,
-        /(?:url|embed|src)\s*:\s*["']([^"']*\/e\/[A-Za-z0-9_-]+[^"']*)["']/g
-    ];
-
-    for (const pattern of patterns) {
-        let match;
-        while ((match = pattern.exec(html))) {
-            const value = match[1] || match[0];
-            if (value.includes("/e/")) urls.push(value.replace(/\\u0026/g, "&"));
-        }
-    }
-    return [...new Set(urls)];
-}
-
-async function fetchEpisodeSourcesApi(slug, episodeNumber, language, anilistId) {
-    const endpoints = [
-        anilistId ? `/api/flix/${anilistId}/${episodeNumber}` : null,
-        slug ? `/api/v1/anime/${slug}/episodes` : null,
-        slug ? `/api/sources/${slug}/${episodeNumber}?lang=${language}` : null,
-        slug ? `/api/episode/sources/${slug}/${episodeNumber}?lang=${language}` : null,
-        slug ? `/api/watch/${slug}?ep=${episodeNumber}&lang=${language}` : null
-    ].filter(Boolean);
-
-    for (const endpoint of endpoints) {
-        try {
-            const json = await fetchJson(endpoint);
-            if (Array.isArray(json.servers)) {
-                const urls = json.servers
-                    .filter(server => !language || !server.dataType || server.dataType === language)
-                    .map(server => server.dataLink)
-                    .filter(Boolean);
-                if (urls.length > 0) return [...new Set(urls)];
-            }
-
-            const text = JSON.stringify(json);
-            const urls = extractDirectFlixUrls(text);
-            if (urls.length > 0) return urls;
-        } catch (_) {}
-    }
-    return [];
-}
-
 export async function getFlixEmbeds(slug, episodeNumber, language, anilistId) {
-    const watchPath = `/watch/${slug || 'anime'}?ep=${episodeNumber}&lang=${language}`;
+    const watchPath = `/watch/${slug || 'anime'}?ep=${episodeNumber}`;
 
     if (anilistId) {
-        const apiUrls = await fetchEpisodeSourcesApi(slug, episodeNumber, language, anilistId);
-        if (apiUrls.length > 0) {
-            return { watchUrl: absolutize(watchPath), embeds: apiUrls };
-        }
+        try {
+            const flixUrl = `/api/flix/${anilistId}/${episodeNumber}`;
+            const json = await fetchJson(flixUrl, {
+                headers: { "Referer": absolutize(watchPath) }
+            });
+            if (json.success && Array.isArray(json.servers) && json.servers.length > 0) {
+                const filtered = json.servers.filter(s => !language || !s.dataType || s.dataType === language);
+                return {
+                    watchUrl: absolutize(watchPath),
+                    servers: filtered.length > 0 ? filtered : json.servers,
+                    embeds: (filtered.length > 0 ? filtered : json.servers).map(s => s.dataLink).filter(Boolean)
+                };
+            }
+        } catch (_) {}
     }
 
     if (slug) {
         try {
-            const html = await fetchText(watchPath);
-            const direct = extractDirectFlixUrls(html);
-            if (direct.length > 0) return { watchUrl: absolutize(watchPath), embeds: direct };
+            const html = await fetchText(`/anime/${slug}?_ep=${episodeNumber}`);
+            const anilistMatch = html.match(/anilist_id:\s*(\d+)/);
+            if (anilistMatch) {
+                const alId = anilistMatch[1];
+                const flixUrl = `/api/flix/${alId}/${episodeNumber}`;
+                const json = await fetchJson(flixUrl, {
+                    headers: { "Referer": absolutize(watchPath) }
+                });
+                if (json.success && Array.isArray(json.servers) && json.servers.length > 0) {
+                    const filtered = json.servers.filter(s => !language || !s.dataType || s.dataType === language);
+                    return {
+                        watchUrl: absolutize(watchPath),
+                        servers: filtered.length > 0 ? filtered : json.servers,
+                        embeds: (filtered.length > 0 ? filtered : json.servers).map(s => s.dataLink).filter(Boolean)
+                    };
+                }
+            }
         } catch (_) {}
-
-        const apiUrls = await fetchEpisodeSourcesApi(slug, episodeNumber, language, anilistId);
-        return { watchUrl: absolutize(watchPath), embeds: apiUrls };
     }
 
-    return { watchUrl: absolutize(watchPath), embeds: [] };
+    return { watchUrl: absolutize(watchPath), servers: [], embeds: [] };
 }

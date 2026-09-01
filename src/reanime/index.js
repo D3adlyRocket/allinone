@@ -1,5 +1,5 @@
 import { getFlixEmbeds, getTmdbInfo, getAnilistInfo, searchReanimeAnime, getSyncInfo, resolveByDate } from './reanime.js';
-import { extractFlixCloud } from './flixcloud.js';
+import { extractFlixCloud, extractFlixCloudDownload } from './flixcloud.js';
 
 async function getStreams(tmdbId, mediaType = "tv", season = null, episode = null) {
     try {
@@ -10,25 +10,20 @@ async function getStreams(tmdbId, mediaType = "tv", season = null, episode = nul
         let searchTitle = "";
         let searchYear = null;
 
-        // Step 1: Resolve Metadata + Verified AniList ID
         if (typeof tmdbId === 'string' && tmdbId.indexOf('anilist:') === 0) {
             alId = tmdbId.split(':')[1];
         } else {
-            console.log(`[Reanime] Resolving sync info for TMDB ${tmdbId}...`);
             try {
                 const syncInfo = await getSyncInfo(tmdbId, mediaType, season, episodeNumber);
                 searchTitle = syncInfo.title;
-                
+
                 const syncResult = await resolveByDate(syncInfo.releaseDate, syncInfo.title, episodeNumber, syncInfo.episodeTitle, syncInfo.dayIndex);
                 if (syncResult && syncResult.alId) {
                     alId = String(syncResult.alId);
                     episodeNumber = syncResult.episode;
                     searchTitle = syncResult.title;
-                    console.log(`[Reanime] Verified AniList ID: ${alId}, Episode: ${episodeNumber}`);
                 }
-            } catch (syncErr) {
-                console.warn(`[Reanime] Sync info failed: ${syncErr.message}. Falling back to basic search.`);
-            }
+            } catch (_) {}
 
             if (!alId && !searchTitle) {
                 try {
@@ -39,21 +34,22 @@ async function getStreams(tmdbId, mediaType = "tv", season = null, episode = nul
             }
         }
 
-        // Step 2: Try direct /api/flix lookup if AniList ID is available
-        const embedsByLang = {};
+        const serversByLang = {};
+        let watchUrl = "";
+
         if (alId) {
             for (const lang of ["sub", "dub"]) {
                 try {
                     const res = await getFlixEmbeds(null, episodeNumber, lang, alId);
-                    if (res.embeds && res.embeds.length > 0) {
-                        embedsByLang[lang] = res;
+                    if (res.servers && res.servers.length > 0) {
+                        serversByLang[lang] = res.servers;
+                        if (res.watchUrl) watchUrl = res.watchUrl;
                     }
                 } catch (_) {}
             }
         }
 
-        // Step 3: Fallback to searching Reanime by title if direct lookup produced no embeds
-        if (Object.keys(embedsByLang).length === 0) {
+        if (Object.keys(serversByLang).length === 0) {
             if (!searchTitle && alId) {
                 const alInfo = await getAnilistInfo(alId);
                 searchTitle = alInfo.title;
@@ -68,8 +64,9 @@ async function getStreams(tmdbId, mediaType = "tv", season = null, episode = nul
                     for (const lang of ["sub", "dub"]) {
                         try {
                             const res = await getFlixEmbeds(slug, episodeNumber, lang, finalAlId);
-                            if (res.embeds && res.embeds.length > 0) {
-                                embedsByLang[lang] = res;
+                            if (res.servers && res.servers.length > 0) {
+                                serversByLang[lang] = res.servers;
+                                if (res.watchUrl) watchUrl = res.watchUrl;
                             }
                         } catch (_) {}
                     }
@@ -77,53 +74,66 @@ async function getStreams(tmdbId, mediaType = "tv", season = null, episode = nul
             }
         }
 
-        if (Object.keys(embedsByLang).length === 0) return [];
+        if (Object.keys(serversByLang).length === 0) return [];
 
         const streams = [];
+        const seen = new Set();
 
         for (const language of ["sub", "dub"]) {
-            const embedInfo = embedsByLang[language];
-            if (!embedInfo || !embedInfo.embeds) continue;
+            const serverList = serversByLang[language] || [];
 
-            const watchUrl = embedInfo.watchUrl;
-            const embeds = embedInfo.embeds;
+            for (let i = 0; i < serverList.length; i++) {
+                const server = serverList[i];
+                const dataLink = server.dataLink;
+                if (!dataLink) continue;
 
-            for (let i = 0; i < embeds.length; i++) {
+                const serverName = server.serverName || `HD-${i + 1}`;
+                const langUpper = language.toUpperCase();
+                const displayTitle = searchTitle || "Anime";
+                const streamTitle = mediaType === 'movie'
+                    ? `${displayTitle} (${langUpper})`
+                    : `${displayTitle} - Episode ${episodeNumber} (${langUpper})`;
+
+                // 1. Direct Download Stream (MKV)
                 try {
-                    console.log(`[Reanime] Extracting locally: ${embeds[i]}`);
-                    const extracted = await extractFlixCloud(embeds[i], watchUrl);
-                    
-                    console.log(`[Reanime] Successfully extracted: ${extracted.url}`);
-                    const displayTitle = searchTitle || extracted.title || "Anime";
-                    const streamTitle = mediaType === 'movie' 
-                        ? `${displayTitle} (${language.toUpperCase()})`
-                        : `${displayTitle} - Episode ${episodeNumber} (${language.toUpperCase()})`;
+                    const directDl = await extractFlixCloudDownload(dataLink);
+                    if (directDl && directDl.url && !seen.has(directDl.url)) {
+                        seen.add(directDl.url);
+                        streams.push({
+                            name: `Reanime [${langUpper}] ${serverName} Download (${directDl.quality || 'MKV'})`,
+                            title: streamTitle,
+                            url: directDl.url,
+                            quality: directDl.quality || "1080p",
+                            headers: directDl.headers,
+                            provider: "reanime",
+                            type: "mkv"
+                        });
+                    }
+                } catch (_) {}
 
-                    streams.push({
-                        name: `Reanime ${language.toUpperCase()} HD-${i + 1}`,
-                        title: streamTitle,
-                        url: extracted.url,
-                        quality: "Auto",
-                        headers: extracted.headers,
-                        provider: "reanime",
-                        type: "m3u8",
-                        subtitles: extracted.subtitles
-                    });
-                } catch (error) {
-                    console.warn(`[Reanime] Local extraction failed: ${error.message}`);
-                }
+                // 2. HLS Stream (m3u8)
+                try {
+                    const extracted = await extractFlixCloud(dataLink, watchUrl);
+                    if (extracted && extracted.url && !seen.has(extracted.url)) {
+                        seen.add(extracted.url);
+                        streams.push({
+                            name: `Reanime [${langUpper}] ${serverName} (HLS Auto)`,
+                            title: streamTitle,
+                            url: extracted.url,
+                            quality: "Auto",
+                            headers: extracted.headers,
+                            provider: "reanime",
+                            type: "m3u8",
+                            subtitles: extracted.subtitles || []
+                        });
+                    }
+                } catch (_) {}
             }
         }
 
-        const seen = new Set();
-        return streams.filter(stream => {
-            if (!stream.url || seen.has(stream.url)) return false;
-            seen.add(stream.url);
-            return true;
-        });
+        return streams;
     } catch (error) {
         console.error(`[Reanime] Error: ${error.message}`);
-        if (error.stack) console.error(error.stack);
         return [];
     }
 }

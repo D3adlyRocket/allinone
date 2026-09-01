@@ -1,18 +1,9 @@
-/**
- * FlixCloud Extractor for Nuvio
- * Decrypts stream URLs locally using a JavaScript-based WASM interpreter.
- * Supports remote decryption fallback for limited environments (Hermes).
- */
-
-const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-const SEC_CH_UA = '"Not-A.Brand";v="99", "Chromium";v="120", "Google Chrome";v="120"';
-const SEC_CH_UA_MOBILE = "?0";
-const SEC_CH_UA_PLATFORM = '"Windows"';
+import { FLIXCLOUD_BASE, ENC_DEC_BASE, USER_AGENT, FLIX_HEADERS } from './constants.js';
 
 function getUrlOrigin(url) {
-    if (!url) return "";
+    if (!url) return FLIXCLOUD_BASE;
     const match = url.match(/^(https?:\/\/[^\/]+)/);
-    return match ? match[1] : "";
+    return match ? match[1] : FLIXCLOUD_BASE;
 }
 
 function safeAtob(str) {
@@ -48,14 +39,141 @@ function parseBytes(val) {
     }
 }
 
+function normalizeFlixEmbedUrl(url) {
+    let finalUrl = url.startsWith("http") ? url : `${FLIXCLOUD_BASE}${url.startsWith("/") ? "" : "/"}${url}`;
+    finalUrl = finalUrl.replace(/[?&]v=[^&]+/, "").replace(/[?&]kuudere_ts=[^&]+/, "");
+    const separator = finalUrl.includes("?") ? "&" : "?";
+    return `${finalUrl}${separator}v=1&autoPlay=true&skI=false&skO=false&kuudere_ts=${Date.now()}`;
+}
+
+function json5ToJson(json5) {
+    return json5
+        .replace(/([{,]\s*)([\w_]+)(\s*:)/g, '$1"$2"$3')
+        .replace(/,\s*([}\]])/g, '$1')
+        .replace(/:\s*undefined\b/g, ': null');
+}
+
+function extractBalancedObject(source, startIdx) {
+    const start = source.indexOf("{", startIdx);
+    if (start < 0) return null;
+    let depth = 0, quote = null, escape = false;
+    for (let i = start; i < source.length; i++) {
+        const ch = source[i];
+        if (quote) {
+            if (escape) escape = false;
+            else if (ch === "\\") escape = true;
+            else if (ch === quote) quote = null;
+            continue;
+        }
+        if (ch === '"' || ch === "'") { quote = ch; }
+        else if (ch === "{") { depth++; }
+        else if (ch === "}") { depth--; if (depth === 0) return source.substring(start, i + 1); }
+    }
+    return null;
+}
+
+function parseSsrData(html) {
+    const dataMatch = html.match(/type:\s*"data",\s*data:\s*(\{.*?\})\s*,\s*uses:/s);
+    if (dataMatch) {
+        try {
+            const rawJson = json5ToJson(dataMatch[1]);
+            return JSON.parse(rawJson);
+        } catch (e) {}
+    }
+
+    const marker = "obfuscation_seed";
+    const markerIdx = html.indexOf(marker);
+    if (markerIdx >= 0) {
+        let dataIdx = html.lastIndexOf("{", markerIdx);
+        while (dataIdx >= 0) {
+            const obj = extractBalancedObject(html, dataIdx);
+            if (obj && obj.includes(marker)) {
+                try {
+                    const jsonText = json5ToJson(obj);
+                    const parsed = JSON.parse(jsonText);
+                    return parsed.data || parsed;
+                } catch (e) {}
+            }
+            dataIdx = html.lastIndexOf("{", dataIdx - 1);
+        }
+    }
+    throw new Error("Failed to extract FlixCloud SSR data");
+}
+
+export async function extractFlixCloudDownload(embedUrl) {
+    try {
+        const match = embedUrl.match(/\/e\/([a-z0-9]+)/i);
+        const aid = match ? match[1] : null;
+        if (!aid) return null;
+
+        const dlHeaders = {
+            "Accept": "*/*",
+            "Referer": `${FLIXCLOUD_BASE}/`,
+            "User-Agent": USER_AGENT
+        };
+
+        const res = await fetch(`${FLIXCLOUD_BASE}/d/${aid}/__data.json`, {
+            headers: dlHeaders,
+            cfKiller: true,
+            skipSizeCheck: true
+        });
+
+        if (!res.ok) return null;
+        const dataBody = await res.text();
+
+        const fileIdMatch = dataBody.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+        const tokenMatch = dataBody.match(/eyJ[\w-]+\.[\w-]+\.[\w-]+/);
+        const baseMatch = dataBody.match(/https:\/\/fetch\d*\.flixcloud\.cc/);
+        const resolutionMatch = dataBody.match(/(\d{3,4}p)/);
+
+        const fileId = fileIdMatch ? fileIdMatch[0] : null;
+        const token = tokenMatch ? tokenMatch[0] : null;
+        const base = baseMatch ? baseMatch[0] : FLIXCLOUD_BASE;
+        const resolution = resolutionMatch ? resolutionMatch[1] : null;
+
+        if (!fileId || !token) return null;
+
+        let ready = false;
+        for (let attempts = 0; !ready && attempts < 2; attempts++) {
+            try {
+                const progRes = await fetch(`${base}/download/${fileId}/progress?token=${token}`, {
+                    headers: dlHeaders,
+                    cfKiller: true,
+                    skipSizeCheck: true
+                });
+                if (progRes.ok) {
+                    const text = await progRes.text();
+                    if (text.includes('"status":"ready"') || text.includes('"ready"')) {
+                        ready = true;
+                        break;
+                    }
+                    if (text.includes('"status":"failed"')) break;
+                }
+            } catch (_) {}
+        }
+
+        const fileUrl = `${base}/download/${fileId}?token=${token}`;
+        return {
+            url: fileUrl,
+            quality: resolution || "1080p",
+            type: "mkv",
+            headers: dlHeaders
+        };
+    } catch (_) {
+        return null;
+    }
+}
+
 export async function extractFlixCloud(embedUrl, referer) {
-    const pageUrl = normalizeFlixEmbedUrl(embedUrl, referer);
+    const pageUrl = normalizeFlixEmbedUrl(embedUrl);
     const origin = getUrlOrigin(pageUrl);
-    
+
     const response = await fetch(pageUrl, {
         headers: {
             "User-Agent": USER_AGENT,
-            "Referer": "https://flixcloud.cc/"
+            "Accept": "*/*",
+            "Origin": origin,
+            "Referer": `${FLIXCLOUD_BASE}/`
         },
         cfKiller: true,
         skipSizeCheck: true
@@ -66,22 +184,28 @@ export async function extractFlixCloud(embedUrl, referer) {
 
     const data = parseSsrData(html);
 
+    const rawSubtitles = Array.isArray(data.subtitles) ? data.subtitles : [];
+    const subtitles = rawSubtitles.map(sub => ({
+        url: sub.url,
+        language: sub.language || sub.lang || "Unknown",
+        format: sub.format || (sub.url.endsWith(".ass") ? "ass" : sub.url.endsWith(".vtt") ? "vtt" : "srt"),
+        default: !!sub.default
+    }));
+
     try {
-        console.log("[FlixCloud] Trying remote decryption priority...");
         const remoteStream = await decryptFlixCloudRemote(data, origin);
-        const cleanStreamUrl = remoteStream.replace(/\\\//g, "/").replace(/&amp;/g, "&").trim();
         return {
-            url: cleanStreamUrl,
+            url: remoteStream.streamUrl,
             videoId: data.video_id,
             title: data.video_title,
-            subtitles: data.subtitles || [],
+            subtitles: subtitles,
             headers: {
-                "Referer": "https://flixcloud.cc/",
+                "Referer": `${FLIXCLOUD_BASE}/`,
                 "User-Agent": USER_AGENT
             }
         };
     } catch (remoteError) {
-        console.warn(`[FlixCloud] Remote decryption failed: ${remoteError.message}. Falling back to local WASM...`);
+        console.warn(`[FlixCloud] Remote decryption error: ${remoteError.message}. Trying local fallback.`);
     }
 
     const seed = data.obfuscation_seed;
@@ -94,7 +218,7 @@ export async function extractFlixCloud(embedUrl, referer) {
 
     const fields = await deriveFieldMap(seed);
     const cryptoParts = extractObfuscatedCryptoData(obfuscated, fields);
-    
+
     const frag2Val = data[fields.keyFrag2Field];
     const tokenRef = data[fields.tokenField];
 
@@ -102,12 +226,11 @@ export async function extractFlixCloud(embedUrl, referer) {
         throw new Error("FlixCloud token fields missing");
     }
 
-    // Step 2: Strict Registration call (The "Authorizer")
-    // This request registers the IP/Token with the FlixCloud security system.
     const tokenResponse = await fetch(`${origin}/api/m3u8/${tokenRef}`, {
         headers: {
             "User-Agent": USER_AGENT,
-            "Referer": "https://flixcloud.cc/"
+            "Origin": origin,
+            "Referer": `${FLIXCLOUD_BASE}/`
         },
         cfKiller: true,
         skipSizeCheck: true
@@ -135,67 +258,86 @@ export async function extractFlixCloud(embedUrl, referer) {
     );
 
     const streamUrl = await decryptAesCbcUrl(wasmKey, cryptoParts.ivB64, encryptedUrlB64, seed);
-
-    // Clean the decrypted URL
     const cleanStreamUrl = streamUrl.replace(/\\\//g, "/").replace(/&amp;/g, "&").trim();
 
     return {
         url: cleanStreamUrl,
         videoId: data.video_id,
         title: data.video_title,
-        subtitles: data.subtitles || [],
+        subtitles: subtitles,
         headers: {
-            "Referer": "https://flixcloud.cc/",
+            "Referer": `${FLIXCLOUD_BASE}/`,
             "User-Agent": USER_AGENT
         }
     };
 }
 
-function normalizeFlixEmbedUrl(url, referer) {
-    let finalUrl = url.startsWith("http") ? url : `https://flixcloud.cc${url.startsWith("/") ? "" : "/"}${url}`;
-    finalUrl = finalUrl.replace(/[?&]v=[^&]+/, "").replace(/[?&]kuudere_ts=[^&]+/, "");
-    const separator = finalUrl.includes("?") ? "&" : "?";
-    return `${finalUrl}${separator}v=1&autoPlay=true&skI=false&skO=false&kuudere_ts=${Date.now()}`;
-}
+async function decryptFlixCloudRemote(data, origin) {
+    const cleanData = Object.assign({}, data);
+    delete cleanData.subtitles;
+    delete cleanData.intro_chapter;
+    delete cleanData.outro_chapter;
 
-function extractBalancedObject(source, startIdx) {
-    const start = source.indexOf("{", startIdx);
-    if (start < 0) return null;
-    let depth = 0, quote = null, escape = false;
-    for (let i = start; i < source.length; i++) {
-        const ch = source[i];
-        if (quote) {
-            if (escape) escape = false;
-            else if (ch === "\\") escape = true;
-            else if (ch === quote) quote = null;
-            continue;
-        }
-        if (ch === '"' || ch === "'") { quote = ch; } 
-        else if (ch === "{") { depth++; } 
-        else if (ch === "}") { depth--; if (depth === 0) return source.substring(start, i + 1); }
-    }
-    return null;
-}
+    const resolveResponse = await fetch(`${ENC_DEC_BASE}/api/dec-flixcloud?type=token`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+            "User-Agent": USER_AGENT
+        },
+        body: JSON.stringify({ data: cleanData })
+    });
+    if (!resolveResponse.ok) throw new Error(`Token API HTTP ${resolveResponse.status}`);
+    const resolveJson = await resolveResponse.json();
 
-function parseSsrData(html) {
-    const marker = "obfuscation_seed";
-    const markerIdx = html.indexOf(marker);
-    if (markerIdx < 0) throw new Error("FlixCloud SSR data marker not found");
-    let dataIdx = html.lastIndexOf("{", markerIdx);
-    while (dataIdx >= 0) {
-        const obj = extractBalancedObject(html, dataIdx);
-        if (obj && obj.includes(marker)) {
-            try {
-                const jsonText = obj
-                    .replace(/([{,])\s*([A-Za-z_$][A-Za-z0-9_$]*|[0-9a-f]{4,}(?:_[0-9a-f]{4,})?)\s*:/g, '$1"$2":')
-                    .replace(/,\s*([}\]])/g, "$1");
-                const parsed = JSON.parse(jsonText);
-                return parsed.data || parsed;
-            } catch (e) {}
-        }
-        dataIdx = html.lastIndexOf("{", dataIdx - 1);
+    const result = resolveJson.result || resolveJson;
+    const token = result.token || (result.context && result.context.token);
+    const context = result.context || result;
+
+    if (!token) throw new Error("Missing token in resolve response");
+
+    const tokenResponse = await fetch(`${origin}/api/m3u8/${token}`, {
+        headers: {
+            "User-Agent": USER_AGENT,
+            "Origin": origin,
+            "Referer": `${FLIXCLOUD_BASE}/`
+        },
+        cfKiller: true,
+        skipSizeCheck: true
+    });
+    if (!tokenResponse.ok) throw new Error(`Token authorization HTTP ${tokenResponse.status}`);
+    const tokenJson = await tokenResponse.json();
+
+    const decryptResponse = await fetch(`${ENC_DEC_BASE}/api/dec-flixcloud?type=stream`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+            "User-Agent": USER_AGENT
+        },
+        body: JSON.stringify({
+            data: {
+                context: context,
+                stream_response: tokenJson
+            }
+        })
+    });
+    if (!decryptResponse.ok) throw new Error(`Stream decrypt HTTP ${decryptResponse.status}`);
+    const decryptJson = await decryptResponse.json();
+
+    const stream = decryptJson.result?.stream || decryptJson.result?.url || decryptJson.result;
+    if (!stream || typeof stream !== 'string') {
+        throw new Error("Invalid stream returned from decrypt API");
     }
-    throw new Error("Failed to extract valid SSR data object");
+
+    const wPayload = decryptJson.result?.context?.w_payload || context?.w_payload || '';
+    const cleanStream = stream.replace(/\\\//g, "/").replace(/&amp;/g, "&").trim();
+    const parseUrl = `${ENC_DEC_BASE}/api/parse-flixcloud?url=${encodeURIComponent(cleanStream)}&w_payload=${encodeURIComponent(wPayload)}`;
+
+    return {
+        streamUrl: parseUrl,
+        rawStreamUrl: cleanStream
+    };
 }
 
 async function deriveFieldMap(seed) {
@@ -203,7 +345,7 @@ async function deriveFieldMap(seed) {
     for (let i = 0; i < 3; i++) first = await sha256Hex(first + String(i));
     let second = first;
     for (let i = 0; i < 3; i++) second = await sha256Hex(second + String(i));
-    const fields = {
+    return {
         keyField: `kf_${first.substring(8, 16)}`,
         ivField: `ivf_${first.substring(16, 24)}`,
         containerName: `cd_${first.substring(24, 32)}`,
@@ -212,7 +354,6 @@ async function deriveFieldMap(seed) {
         tokenField: `${first.substring(48, 64)}_${first.substring(56, 64)}`,
         keyFrag2Field: `${second.substring(0, 16)}_${second.substring(16, 24)}`
     };
-    return fields;
 }
 
 function extractObfuscatedCryptoData(data, fields) {
@@ -280,7 +421,7 @@ function _executeWasmBody(body, params, globals, memory) {
     const branch = (depth) => {
         const idx = cStack.length - 1 - depth; if (idx < 0) return false;
         const frame = cStack[idx];
-        if (frame.isLoop) { cStack.length = idx + 1; pc = frame.startPc; } 
+        if (frame.isLoop) { cStack.length = idx + 1; pc = frame.startPc; }
         else { cStack.length = idx; pc = frame.endPc + 1; }
         return true;
     };
@@ -353,108 +494,12 @@ async function decryptAesCbcUrl(rawKey, ivVal, cipherB64, seed) {
             const decrypted = CryptoJS.AES.decrypt(cipherB64, finalKey, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
             const result = decrypted.toString(CryptoJS.enc.Utf8);
             if (result) return result.trim();
-        } catch (e) {
-            console.warn("[FlixCloud] Local decryption failed, trying remote...");
-        }
+        } catch (e) {}
     }
-
-    console.log("[FlixCloud] Using remote decryption helper...");
-    try {
-        const response = await fetch("https://id-mapping-api-nuvio-extraction-api.hf.space/decrypt/flixcloud", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                rawKey: uint8ArrayToBase64(rawKey),
-                ivVal: ivVal,
-                cipherText: cipherB64,
-                seed: seed
-            })
-        });
-        if (!response.ok) throw new Error(`Remote decrypt HTTP ${response.status}`);
-        const { decrypted } = await response.json();
-        if (!decrypted) throw new Error("Remote decrypt returned empty result");
-        return decrypted.trim();
-    } catch (error) {
-        throw new Error(`Decryption failed (Local: Unsupported, Remote: ${error.message})`);
-    }
-}
-
-function uint8ArrayToBase64(arr) {
-    let bin = '';
-    for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
-    if (typeof btoa === 'function') return btoa(bin);
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-    let output = '';
-    for (let i = 0; i < bin.length; i += 3) {
-        let a = bin.charCodeAt(i), b = bin.charCodeAt(i+1), c = bin.charCodeAt(i+2);
-        output += chars[a >> 2];
-        output += chars[((a & 3) << 4) | (b >> 4)];
-        output += chars[isNaN(b) ? 64 : ((b & 15) << 2) | (c >> 6)];
-        output += chars[isNaN(b) || isNaN(c) ? 64 : c & 63];
-    }
-    return output;
+    throw new Error("Local decryption failed");
 }
 
 async function sha256Hex(text) {
     const CryptoJS = require('crypto-js');
     return CryptoJS.SHA256(text).toString(CryptoJS.enc.Hex);
-}
-
-async function decryptFlixCloudRemote(data, origin) {
-    // 1. Resolve call (type=token)
-    const resolveResponse = await fetch("https://enc-dec.app/api/dec-flixcloud?type=token", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "User-Agent": USER_AGENT
-        },
-        body: JSON.stringify({ data })
-    });
-    if (!resolveResponse.ok) throw new Error(`Resolve API HTTP ${resolveResponse.status}`);
-    const resolveJson = await resolveResponse.json();
-    
-    const result = resolveJson.result || resolveJson;
-    const token = result.token || (result.context && result.context.token);
-    const context = result.context || result;
-    
-    if (!token) {
-        throw new Error("Could not find token in resolve API response");
-    }
-
-    // 2. Fetch token authorization response from FlixCloud
-    const tokenResponse = await fetch(`${origin}/api/m3u8/${token}`, {
-        headers: {
-            "User-Agent": USER_AGENT,
-            "Referer": "https://flixcloud.cc/"
-        },
-        cfKiller: true,
-        skipSizeCheck: true
-    });
-    if (!tokenResponse.ok) throw new Error(`FlixCloud token authorization HTTP ${tokenResponse.status}`);
-    const tokenJson = await tokenResponse.json();
-
-    // 3. Decrypt call (type=stream)
-    const decryptResponse = await fetch("https://enc-dec.app/api/dec-flixcloud?type=stream", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "User-Agent": USER_AGENT
-        },
-        body: JSON.stringify({
-            data: {
-                context: context,
-                stream_response: tokenJson,
-                token_response: tokenJson
-            }
-        })
-    });
-    if (!decryptResponse.ok) throw new Error(`Decrypt API HTTP ${decryptResponse.status}`);
-    const decryptJson = await decryptResponse.json();
-    
-    const stream = decryptJson.result?.stream || decryptJson.result?.url || decryptJson.result;
-    if (!stream || typeof stream !== 'string') {
-        throw new Error("Decrypt API did not return a valid stream URL");
-    }
-
-    return stream;
 }
